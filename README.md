@@ -5,8 +5,8 @@ A symbolic, language-prior-free benchmark for **continual compositional learning
 ## Quick start
 
 ```
-pip install -r requirements.txt
-python demo.py
+uv sync
+uv run demo.py
 ```
 
 This generates four benchmark instances (one per schedule kind) under `out/` — each as a `.html` self-contained report and a `.png` DAG + timeline figure — and prints a learner comparison table.
