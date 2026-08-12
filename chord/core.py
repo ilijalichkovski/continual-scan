@@ -19,6 +19,15 @@ COLORS = ["RED", "GREEN", "BLUE", "YELLOW", "PURPLE", "ORANGE", "PINK", "BROWN"]
 _ATOM_NAMES = ["dax", "lug", "wif", "zup", "fep", "blicket", "kiki", "tufa"]
 _UNARY = {"thrice": "[u1] [u1] [u1]", "twice": "[u1] [u1]"}
 _BINARY = {"after": "[x2] [x1]", "surround": "[x1] [x2] [x1]"}
+# Unified operator catalog: name -> (arity_tag, lhs_template, rhs_template)
+OPERATORS: dict[str, tuple[str, str, str]] = {
+    "twice": ("unary", "u1 twice", "[u1] [u1]"),
+    "thrice": ("unary", "u1 thrice", "[u1] [u1] [u1]"),
+    "after": ("binary", "x1 after x2", "[x2] [x1]"),
+    "surround": ("binary", "x1 surround x2", "[x1] [x2] [x1]"),
+}
+_NAME_ALPHABET = "bcdfghjklmnpqrstvwxz"
+_OUT_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ"
 
 
 @dataclass(frozen=True)
@@ -99,16 +108,92 @@ def oracle(tg: TimedGrammar, inp: str, eval_at: int) -> str:
         return ""
 
 
+def _random_token(rng: random.Random, length: int, alphabet: str,
+                  forbidden: set[str]) -> str:
+    if length < 1:
+        raise ValueError("primitive_length must be >= 1")
+    for _ in range(10_000):
+        tok = "".join(rng.choice(alphabet) for _ in range(length))
+        if tok not in forbidden:
+            return tok
+    raise RuntimeError(f"could not sample a unique token of length {length}")
+
+
 def sample_pool(n_atoms: int = 4, n_unary: int = 2, n_binary: int = 1,
-                seed: int = 0) -> List[Definition]:
-    """Sample a small pool of primitive Definitions (ku_index left as -1 for scheduling)."""
+                seed: int = 0, *,
+                operations: List[str] | None = None,
+                primitive_length: int | None = None) -> List[Definition]:
+    """Sample a pool of primitive Definitions (ku_index left as -1 for scheduling).
+
+    Parameters
+    ----------
+    n_atoms:
+        Number of atomic primitives.
+    n_unary / n_binary:
+        Used only when `operations` is None (legacy demo path).
+    operations:
+        Explicit operator names drawn from `OPERATORS` (e.g. twice, thrice, after).
+        When set, arity counts are ignored.
+    primitive_length:
+        If set, atom names and their output tokens are random strings of this
+        length (unfamiliar vocabulary for ICL / perplexity evals). If None,
+        use the classic MLC nonsense words + color outputs.
+    """
     rng = random.Random(seed)
-    atoms = rng.sample(_ATOM_NAMES, n_atoms)
-    colors = rng.sample(COLORS, n_atoms)
-    unaries = rng.sample(list(_UNARY.items()), n_unary)
-    binaries = rng.sample(list(_BINARY.items()), n_binary)
-    defs: List[Definition] = []
-    defs += [Definition("DEF", a, c, ku_index=-1) for a, c in zip(atoms, colors)]
-    defs += [Definition("DEF", f"u1 {n}", b, ku_index=-1) for n, b in unaries]
-    defs += [Definition("DEF", f"x1 {n} x2", b, ku_index=-1) for n, b in binaries]
-    return defs
+    used_names: set[str] = set(OPERATORS)
+    used_outs: set[str] = set()
+
+    if primitive_length is None:
+        if n_atoms > len(_ATOM_NAMES):
+            raise ValueError(f"n_atoms={n_atoms} exceeds built-in name list "
+                             f"({len(_ATOM_NAMES)}); set primitive_length to synthesize names")
+        atoms = rng.sample(_ATOM_NAMES, n_atoms)
+        colors = rng.sample(COLORS, n_atoms)
+        atom_defs = [Definition("DEF", a, c, ku_index=-1)
+                     for a, c in zip(atoms, colors)]
+    else:
+        atom_defs = []
+        for _ in range(n_atoms):
+            name = _random_token(rng, primitive_length, _NAME_ALPHABET, used_names)
+            used_names.add(name)
+            out = _random_token(rng, primitive_length, _OUT_ALPHABET, used_outs)
+            used_outs.add(out)
+            atom_defs.append(Definition("DEF", name, out, ku_index=-1))
+
+    op_defs: List[Definition] = []
+    if operations is not None:
+        unknown = [op for op in operations if op not in OPERATORS]
+        if unknown:
+            raise ValueError(f"unknown operations: {unknown}; "
+                             f"known: {sorted(OPERATORS)}")
+        if len(set(operations)) != len(operations):
+            raise ValueError(f"duplicate operations: {operations}")
+        for name in operations:
+            _arity, lhs, rhs = OPERATORS[name]
+            op_defs.append(Definition("DEF", lhs, rhs, ku_index=-1))
+    else:
+        unaries = rng.sample(list(_UNARY.items()), n_unary)
+        binaries = rng.sample(list(_BINARY.items()), n_binary)
+        op_defs += [Definition("DEF", f"u1 {n}", b, ku_index=-1) for n, b in unaries]
+        op_defs += [Definition("DEF", f"x1 {n} x2", b, ku_index=-1) for n, b in binaries]
+
+    return atom_defs + op_defs
+
+
+def fresh_outputs(n: int, primitive_length: int | None, used: set[str],
+                  seed: int) -> List[str]:
+    """Sample `n` fresh atom-output tokens not in `used` (for REDEF events)."""
+    rng = random.Random(seed)
+    outs: List[str] = []
+    if primitive_length is None:
+        pool = [c for c in COLORS if c not in used]
+        if len(pool) < n:
+            # Fall back to synthesized tokens if the classic palette is exhausted.
+            while len(pool) < n:
+                pool.append(_random_token(rng, 4, _OUT_ALPHABET, used | set(pool)))
+        outs = pool[:n]
+    else:
+        for _ in range(n):
+            tok = _random_token(rng, primitive_length, _OUT_ALPHABET, used | set(outs))
+            outs.append(tok)
+    return outs

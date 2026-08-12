@@ -1,0 +1,14 @@
+# CHORD pretraining / perplexity-eval dataset
+# 10 timesteps, 5 primitives, 3 operations, no redefinitions
+
+n_primitives = 5
+operations = ["twice", "thrice", "after"]
+n_timesteps = 10
+primitive_length = 3
+redefinitions = false
+n_redefs = 0
+n_instances = 100
+n_examples = 3
+n_probes = 3
+seed = 0
+output = "data/chord_10t5p3o.jsonl"

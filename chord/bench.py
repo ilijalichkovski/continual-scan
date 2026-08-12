@@ -20,7 +20,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Dict, List, Set, Tuple
 
-from .core import COLORS, Definition, KU, Probe, TimedGrammar, oracle
+from .core import Definition, KU, Probe, TimedGrammar, oracle, fresh_outputs
 
 
 # ---------- schedule construction ----------
@@ -86,10 +86,14 @@ def _examples_and_probes(tg: TimedGrammar, t: int, new_syms: List[str],
                          rng: random.Random, used: Set[str]
                          ) -> Tuple[List[Tuple[str, str]], List[Probe]]:
     cands = _candidates(tg, t)
-    # Must reference at least one symbol introduced at this KU, and must be novel.
-    touching = [c for c in cands
-                if c[0] not in used
-                and any(s in c[0].split() for s in new_syms)]
+    # Prefer pairs that reference a symbol introduced at this KU. Composition-only
+    # KUs (empty new_syms) fall back to any novel pair from the cumulative grammar.
+    if new_syms:
+        touching = [c for c in cands
+                    if c[0] not in used
+                    and any(s in c[0].split() for s in new_syms)]
+    else:
+        touching = [c for c in cands if c[0] not in used]
     rng.shuffle(touching)
     examples = touching[:n_examples]
     probe_pairs = touching[n_examples:n_examples + n_probes]
@@ -99,23 +103,98 @@ def _examples_and_probes(tg: TimedGrammar, t: int, new_syms: List[str],
     return examples, probes
 
 
+def _pack_defs(defs: List[Definition], n_slots: int,
+               seed: int) -> List[List[Definition]]:
+    """Pack definitions into exactly `n_slots` groups (some may be empty).
+
+    Guarantees the first non-empty group contains at least one atom when any
+    atoms exist. Empty trailing groups are composition-only timesteps.
+    """
+    if n_slots < 1:
+        raise ValueError("n_timesteps must be >= 1")
+    rng = random.Random(seed)
+    atoms = [d for d in defs if d.arity == "atom"]
+    others = [d for d in defs if d.arity != "atom"]
+    rng.shuffle(others)
+    ordered = (atoms[:1] + others + atoms[1:]) if atoms else others[:]
+
+    groups: List[List[Definition]] = [[] for _ in range(n_slots)]
+    if not ordered:
+        return groups
+
+    # Spread defs as evenly as possible across slots; leftover slots stay empty.
+    n_active = min(n_slots, len(ordered))
+    # Round-robin into the first n_active slots so early KUs get content.
+    for i, d in enumerate(ordered):
+        groups[i % n_active].append(d)
+
+    # Ensure KU 0 has an atom when possible (needed for a non-empty grammar).
+    if atoms and not any(d.arity == "atom" for d in groups[0]):
+        for i in range(1, n_slots):
+            atom_i = next((j for j, d in enumerate(groups[i]) if d.arity == "atom"), None)
+            if atom_i is not None:
+                groups[0].append(groups[i].pop(atom_i))
+                break
+    return groups
+
+
 def schedule(defs: List[Definition], kind: str = "topological",
              n_examples: int = 3, n_probes: int = 3,
-             n_redefs: int = 2, seed: int = 0) -> "Benchmark":
-    """Build a full Benchmark from a pool of Definitions and a schedule kind."""
-    rng = random.Random(seed)
-    base_kind = "topological" if kind == "adversarial" else kind
-    groups = _order(defs, base_kind, seed)
+             n_redefs: int = 2, seed: int = 0,
+             n_timesteps: int | None = None,
+             redefinitions: bool | None = None,
+             primitive_length: int | None = None) -> "Benchmark":
+    """Build a full Benchmark from a pool of Definitions and a schedule kind.
 
-    if kind == "adversarial":
+    When `n_timesteps` is set, definitions are packed into exactly that many
+    KUs (empty KUs become composition-only). `redefinitions` overrides the
+    legacy `kind == "adversarial"` switch: True injects REDEF KUs into the
+    timeline (consuming slots from `n_timesteps` when set, else appending).
+    """
+    rng = random.Random(seed)
+    do_redefs = (kind == "adversarial") if redefinitions is None else redefinitions
+    n_redef_events = n_redefs if do_redefs else 0
+
+    if n_timesteps is not None:
+        def_slots = max(1, n_timesteps - n_redef_events) if do_redefs else n_timesteps
+        groups = _pack_defs(defs, def_slots, seed)
+    else:
+        base_kind = "topological" if kind == "adversarial" else kind
+        groups = _order(defs, base_kind, seed)
+
+    if do_redefs and n_redef_events > 0:
         atoms = [d for d in defs if d.arity == "atom"]
-        used_colors = {d.rhs for d in atoms}
-        fresh = [c for c in COLORS if c not in used_colors]
-        rng.shuffle(fresh)
-        targets = rng.sample(atoms, k=min(n_redefs, len(atoms)))
-        for i, tgt in enumerate(targets):
-            new_color = fresh[i % len(fresh)] if fresh else "WHITE"
-            groups.append([Definition("REDEF", tgt.lhs, new_color, ku_index=-1)])
+        if not atoms:
+            raise ValueError("redefinitions require at least one atom primitive")
+        used_outs = {d.rhs for d in atoms}
+        fresh = fresh_outputs(n_redef_events, primitive_length, used_outs,
+                              seed=seed + 17)
+        targets = rng.sample(atoms, k=min(n_redef_events, len(atoms)))
+        # If we still need more redefs than unique atoms, cycle with replacement.
+        while len(targets) < n_redef_events:
+            targets.append(rng.choice(atoms))
+        redef_groups = [
+            [Definition("REDEF", tgt.lhs, fresh[i], ku_index=-1)]
+            for i, tgt in enumerate(targets[:n_redef_events])
+        ]
+        if n_timesteps is not None:
+            # Replace trailing empty composition slots first, then append if needed.
+            for rg in redef_groups:
+                placed = False
+                for i in range(len(groups) - 1, -1, -1):
+                    if not groups[i]:
+                        groups[i] = rg
+                        placed = True
+                        break
+                if not placed:
+                    groups.append(rg)
+            # Trim / pad to exact n_timesteps.
+            if len(groups) > n_timesteps:
+                groups = groups[:n_timesteps]
+            while len(groups) < n_timesteps:
+                groups.append([])
+        else:
+            groups.extend(redef_groups)
 
     tg = TimedGrammar(defs=[])
     kus: List[KU] = []
@@ -130,7 +209,12 @@ def schedule(defs: List[Definition], kind: str = "topological",
         used_inputs.update(p.inp for p in pr)
         kus.append(KU(ku_index=t, definitions=stamped, examples=ex, probes=pr))
 
-    return Benchmark(kus=kus, grammar=tg, kind=kind, seed=seed)
+    out_kind = kind
+    if n_timesteps is not None:
+        out_kind = "configured"
+        if do_redefs:
+            out_kind = "configured+redef"
+    return Benchmark(kus=kus, grammar=tg, kind=out_kind, seed=seed)
 
 
 # ---------- learner interface ----------

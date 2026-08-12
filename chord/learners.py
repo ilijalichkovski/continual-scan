@@ -133,23 +133,29 @@ class SubstitutionInductionLearner(Learner):
 LLM = Callable[[str], str]
 
 
-def _format_definitions(defs) -> str:
+def format_definitions(defs) -> str:
     return "\n".join(str(d) for d in defs)
 
 
-def _format_examples(rows) -> str:
+def format_examples(rows) -> str:
     return "\n".join(f"IN: {i}  OUT: {o}" for i, o in rows)
 
 
-def _format_ku(ku: KU) -> str:
+def format_ku(ku: KU) -> str:
     return (
         f"--- KU {ku.ku_index} ---\n"
-        f"*DEFINITIONS*\n{_format_definitions(ku.definitions)}\n"
-        f"*EXAMPLES*\n{_format_examples(ku.examples)}"
+        f"*DEFINITIONS*\n{format_definitions(ku.definitions)}\n"
+        f"*EXAMPLES*\n{format_examples(ku.examples)}"
     )
 
 
-_PROMPT_HEADER = """You are evaluating a symbolic rewrite-rule puzzle.
+# Back-compat aliases for earlier private names.
+_format_definitions = format_definitions
+_format_examples = format_examples
+_format_ku = format_ku
+
+
+PROMPT_HEADER = """You are evaluating a symbolic rewrite-rule puzzle.
 
 Rules are introduced over time in Knowledge Units (KUs).
 Each definition is tagged DEF (new symbol) or REDEF (overwrite of an existing
@@ -160,6 +166,7 @@ is always implicitly present as a low-priority fallback.
 Apply the rules in force at the requested evaluation time. Output ONLY the
 sequence of result tokens separated by single spaces. No commentary.
 """
+_PROMPT_HEADER = PROMPT_HEADER
 
 
 class _ICLBase(Learner):

@@ -11,6 +11,16 @@ python demo.py
 
 This generates four benchmark instances (one per schedule kind) under `out/` — each as a `.html` self-contained report and a `.png` DAG + timeline figure — and prints a learner comparison table.
 
+## Dataset generation (pretraining / perplexity evals)
+
+Config-driven JSONL generator for Protocol-B-style ICL sequences (cumulative KU context → probe completion):
+
+```
+python generate_dataset.py --config configs/pretrain_10t5p3o.toml
+```
+
+Config knobs: `n_primitives`, `operations`, `n_timesteps`, `primitive_length`, `redefinitions`, `n_instances`, etc. CLI flags override file values (see `python generate_dataset.py -h`). Each JSONL record has `context` / `target` / `text` suitable for perplexity scoring.
+
 ## Layout
 
 | File | What it is |
@@ -18,8 +28,10 @@ This generates four benchmark instances (one per schedule kind) under `out/` —
 | `chord/core.py` | Typed primitives, time-indexed grammar, symbolic oracle. Reuses MLC's rewrite engine, vendored as `chord/_interpret_grammar.py`. |
 | `chord/bench.py` | Schedule generator (`topological`, `interleaved`, `backward`, `adversarial`), `Learner` ABC, three baseline learners, `Benchmark` runner, metrics. |
 | `chord/learners.py` | `SubstitutionInductionLearner` (Protocol A, stdlib-only honest baseline) and the ICL family: `CumulativeICL` (Protocol B), `WindowedICL` (Protocol C), plus `make_oracle_llm` and `make_openai_llm` adapters. |
+| `chord/dataset.py` | Config-driven dataset generator for ICL / perplexity evals. |
 | `chord/viz.py` | DAG plot (layered layout, edges from probes, REDEF shadow nodes), schedule timeline, KU pretty-printer, oracle evaluation trace. |
 | `chord/htmlviz.py` | Standalone HTML renderer per benchmark instance — MLC-style colored circles, per-KU sections, inline CSS, embedded SVG timeline + DAG. |
+| `generate_dataset.py` | CLI entrypoint for dataset generation. |
 | `demo.py` | End-to-end walkthrough. |
 
 ## Protocols supported
